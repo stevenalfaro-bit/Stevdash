@@ -58,15 +58,29 @@ const jumpVelocity = 760;
 const lowJumpGravity = 2600;
 const maxFallSpeed = 1600;
 
+const levels = [
+  { name: "Easy", difficulty: 0.8, speed: 360, spawnRate: 1.4 },
+  { name: "Normal", difficulty: 1.0, speed: 420, spawnRate: 1.1 },
+  { name: "Hard", difficulty: 1.3, speed: 480, spawnRate: 0.9 },
+  { name: "Insane", difficulty: 1.6, speed: 540, spawnRate: 0.7 },
+  { name: "Extreme", difficulty: 2.0, speed: 600, spawnRate: 0.5 }
+];
+
 const state = {
-  mode: "ready",
+  screen: "menu",
+  gameMode: "levels",
+  currentLevel: 0,
   score: 0,
   speed: 360,
   elapsed: 0,
   flash: 0,
   spawnTimer: 1.1,
   jumpHeld: false,
-  best: 0
+  best: 0,
+  levelDifficulty: 1.0,
+  baseSpawnRate: 1.1,
+  waveTilt: 0,
+  waveMode: false
 };
 
 const player = {
@@ -77,7 +91,8 @@ const player = {
   vy: 0,
   onGround: false,
   groundedTimer: 0,
-  coyote: 0
+  coyote: 0,
+  tilt: 0
 };
 
 const stars = [];
@@ -127,39 +142,46 @@ function buildStars() {
 }
 buildStars();
 
-function reset() {
-  state.mode = "ready";
-  state.score = 0;
+function startLevel(levelIndex) {
+  state.screen = "playing";
+  state.gameMode = "levels";
+  state.currentLevel = levelIndex;
+  state.levelDifficulty = levels[levelIndex].difficulty;
+  state.speed = levels[levelIndex].speed;
+  state.baseSpawnRate = levels[levelIndex].spawnRate;
+  resetGameVars();
+}
+
+function startWaveMode() {
+  state.screen = "playing";
+  state.gameMode = "wave";
+  state.waveMode = true;
+  state.levelDifficulty = 1.0;
   state.speed = 360;
+  state.baseSpawnRate = 1.1;
+  resetGameVars();
+}
+
+function resetGameVars() {
+  state.score = 0;
   state.elapsed = 0;
   state.flash = 0;
-  state.spawnTimer = 1.1;
+  state.spawnTimer = state.baseSpawnRate;
   state.jumpHeld = false;
   obstacles.length = 0;
   particles.length = 0;
   player.x = 170;
   player.vy = 0;
+  player.tilt = 0;
   resetPlayerToGround();
 }
 
-function startRun() {
-  if (state.mode === "playing") return;
-  if (state.mode === "gameover") {
-    reset();
-  }
-  state.mode = "playing";
-  player.vy = 0;
-  jump();
+function goToMenu() {
+  state.screen = "menu";
+  state.waveMode = false;
 }
 
 function jump() {
-  if (state.mode === "ready") {
-    startRun();
-    return;
-  }
-
-  if (state.mode !== "playing") return;
-
   if (player.onGround || player.coyote > 0) {
     player.vy = -jumpVelocity;
     player.onGround = false;
@@ -179,35 +201,36 @@ function jump() {
   }
 }
 
-function onPointerDown() {
-  if (state.mode === "ready") {
-    startRun();
+function onPointerDown(e) {
+  if (state.screen === "menu") {
     return;
   }
-  if (state.mode === "gameover") {
-    reset();
-    startRun();
+  if (state.screen === "levelSelect") {
     return;
   }
-  jump();
+  if (state.screen === "playing") {
+    jump();
+  }
+  if (state.screen === "gameover") {
+    goToMenu();
+  }
 }
 
 document.addEventListener("pointerdown", onPointerDown);
 document.addEventListener("keydown", (e) => {
-  if (e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW") {
+  if (e.code === "Space") {
     e.preventDefault();
-    if (state.mode === "ready") {
-      startRun();
-    } else if (state.mode === "gameover") {
-      reset();
-      startRun();
-    } else {
+    if (state.screen === "playing") {
       jump();
+    } else if (state.screen === "gameover") {
+      goToMenu();
     }
   }
-
   if (e.code === "ArrowUp" || e.code === "KeyW") {
-    state.jumpHeld = true;
+    e.preventDefault();
+    if (state.screen === "playing") {
+      jump();
+    }
   }
 });
 
@@ -219,9 +242,11 @@ document.addEventListener("keyup", (e) => {
 
 function addObstacle() {
   const coinFlip = Math.random();
+  const multiplier = state.levelDifficulty;
+  
   if (coinFlip < 0.55) {
-    const w = rand(24, 54);
-    const h = rand(28, 80);
+    const w = rand(24, 54) * multiplier;
+    const h = rand(28, 80) * multiplier;
     obstacles.push({
       x: width + 30,
       y: height - groundHeight - h,
@@ -231,7 +256,7 @@ function addObstacle() {
       color: "#ff5a5a"
     });
   } else {
-    const h = rand(28, 70);
+    const h = rand(28, 70) * multiplier;
     obstacles.push({
       x: width + 30,
       y: height - groundHeight - h,
@@ -253,25 +278,29 @@ function rectHit(a, b) {
 }
 
 function update(dt) {
+  if (state.screen !== "playing") return;
+
   state.elapsed += dt;
 
-  if (state.mode === "ready") {
-    state.flash = Math.max(0, state.flash - dt * 2.8);
-    return;
+  if (state.gameMode === "wave") {
+    state.waveTilt += dt * 45;
+    state.speed = Math.min(1200, 360 + state.elapsed * 15);
+  } else {
+    state.speed = levels[state.currentLevel].speed + state.elapsed * 8;
   }
-
-  if (state.mode === "gameover") {
-    state.flash = Math.max(0, state.flash - dt * 3.5);
-    return;
-  }
-
-  state.score += dt * 11.5;
-  state.speed = Math.min(1120, 360 + state.elapsed * 10.4);
 
   const gravity = state.jumpHeld && player.vy < 0 ? lowJumpGravity : baseGravity;
   player.vy += gravity * dt;
   player.vy = Math.min(player.vy, maxFallSpeed);
-  player.y += player.vy * dt;
+  
+  if (state.gameMode === "wave") {
+    const waveAmount = Math.sin(state.waveTilt * Math.PI / 180) * 80;
+    player.y += player.vy * dt;
+    player.tilt = Math.sin(state.waveTilt * Math.PI / 180) * 15;
+  } else {
+    player.y += player.vy * dt;
+    player.tilt = 0;
+  }
 
   const floorY = height - groundHeight;
   if (player.y + player.h >= floorY) {
@@ -295,9 +324,11 @@ function update(dt) {
   state.spawnTimer -= dt;
   if (state.spawnTimer <= 0) {
     addObstacle();
-    const pace = Math.max(0.72, 1.28 - Math.min(0.5, state.elapsed / 30));
+    const pace = Math.max(0.35, state.baseSpawnRate - state.elapsed * 0.05);
     state.spawnTimer = pace;
   }
+
+  state.score += dt * 11.5;
 
   for (let i = obstacles.length - 1; i >= 0; i--) {
     const ob = obstacles[i];
@@ -309,7 +340,7 @@ function update(dt) {
     }
 
     if (rectHit(player, ob)) {
-      state.mode = "gameover";
+      state.screen = "gameover";
       state.flash = 1;
       state.best = Math.max(state.best, Math.floor(state.score));
       for (let j = 0; j < 24; j++) {
@@ -393,6 +424,7 @@ function drawPlayer() {
 
   ctx.save();
   ctx.translate(x + player.w / 2, y + player.h / 2);
+  ctx.rotate(player.tilt * Math.PI / 180);
 
   const g = ctx.createLinearGradient(-player.w / 2, -player.h / 2, player.w / 2, player.h / 2);
   g.addColorStop(0, "#dffcff");
@@ -450,8 +482,89 @@ function drawParticles() {
   }
 }
 
-function drawHud() {
-  ctx.fillStyle = "rgba(8, 12, 18, 0.38)";
+function drawMenu() {
+  ctx.fillStyle = "rgba(0,0,0,0.4)";
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.textAlign = "center";
+  ctx.font = "bold 72px Arial";
+  ctx.fillText("Stevdash", width / 2, height * 0.2);
+
+  ctx.fillStyle = "#ffd166";
+  ctx.font = "bold 28px Arial";
+  ctx.fillText("Choose Game Mode", width / 2, height * 0.35);
+
+  const buttonWidth = 280;
+  const buttonHeight = 60;
+  const startY = height * 0.45;
+
+  const modes = [
+    { label: "Play Levels", y: startY, action: "levels" },
+    { label: "Wave Mode", y: startY + 100, action: "wave" }
+  ];
+
+  for (const mode of modes) {
+    ctx.fillStyle = "rgba(138,231,255,0.3)";
+    ctx.fillRect(width / 2 - buttonWidth / 2, mode.y, buttonWidth, buttonHeight);
+    ctx.strokeStyle = "rgba(138,231,255,0.8)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(width / 2 - buttonWidth / 2, mode.y, buttonWidth, buttonHeight);
+
+    ctx.fillStyle = "#dffcff";
+    ctx.font = "bold 22px Arial";
+    ctx.fillText(mode.label, width / 2, mode.y + 40);
+  }
+
+  ctx.textAlign = "left";
+}
+
+function drawLevelSelect() {
+  ctx.fillStyle = "rgba(0,0,0,0.5)";
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.textAlign = "center";
+  ctx.font = "bold 56px Arial";
+  ctx.fillText("Select Level", width / 2, height * 0.1);
+
+  const buttonWidth = 220;
+  const buttonHeight = 70;
+  const cols = 3;
+  const startX = width / 2 - ((cols * (buttonWidth + 20)) / 2);
+  const startY = height * 0.22;
+
+  for (let i = 0; i < levels.length; i++) {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const x = startX + col * (buttonWidth + 20);
+    const y = startY + row * (buttonHeight + 20);
+
+    ctx.fillStyle = "rgba(255,90,90,0.25)";
+    ctx.fillRect(x, y, buttonWidth, buttonHeight);
+    ctx.strokeStyle = "rgba(255,90,90,0.8)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, buttonWidth, buttonHeight);
+
+    ctx.fillStyle = "#ffd166";
+    ctx.font = "bold 20px Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(levels[i].name, x + buttonWidth / 2, y + 35);
+
+    ctx.fillStyle = "#dffcff";
+    ctx.font = "14px Arial";
+    ctx.fillText("Diff: " + levels[i].difficulty.toFixed(1), x + buttonWidth / 2, y + 55);
+  }
+
+  ctx.fillStyle = "#dffcff";
+  ctx.font = "bold 18px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("Click a level to start", width / 2, height * 0.88);
+  ctx.textAlign = "left";
+}
+
+function drawPlaying() {
+  ctx.fillStyle = "rgba(9, 13, 20, 0.38)";
   ctx.fillRect(18, 18, 220, 54);
   ctx.strokeStyle = "rgba(138,231,255,0.6)";
   ctx.strokeRect(18, 18, 220, 54);
@@ -464,50 +577,34 @@ function drawHud() {
   ctx.font = "bold 16px Arial";
   ctx.fillText("Score: " + Math.floor(state.score), 32, 62);
 
-  if (state.mode === "ready") {
-    ctx.fillStyle = "rgba(0,0,0,0.35)";
-    ctx.fillRect(width * 0.2, height * 0.25, width * 0.6, height * 0.28);
-
-    ctx.fillStyle = "#ffffff";
-    ctx.textAlign = "center";
-    ctx.font = "bold 52px Arial";
-    ctx.fillText("Stevdash", width / 2, height * 0.4);
-
-    ctx.fillStyle = "#dffcff";
-    ctx.font = "bold 22px Arial";
-    ctx.fillText("Click or press space to start", width / 2, height * 0.48);
-
-    ctx.fillStyle = "#ffd166";
-    ctx.font = "bold 18px Arial";
-    ctx.fillText("Geometry Dash style physics", width / 2, height * 0.54);
-    ctx.textAlign = "left";
-  }
-
-  if (state.mode === "gameover") {
-    ctx.fillStyle = "rgba(0,0,0,0.38)";
-    ctx.fillRect(width * 0.2, height * 0.26, width * 0.6, height * 0.3);
-
-    ctx.fillStyle = "#ffffff";
-    ctx.textAlign = "center";
-    ctx.font = "bold 56px Arial";
-    ctx.fillText("Stevdash", width / 2, height * 0.4);
-
-    ctx.fillStyle = "#ffd166";
-    ctx.font = "bold 26px Arial";
-    ctx.fillText("Score: " + Math.floor(state.score), width / 2, height * 0.49);
-
-    ctx.fillStyle = "#dffcff";
-    ctx.font = "bold 18px Arial";
-    ctx.fillText("Click or press space to restart", width / 2, height * 0.58);
-    ctx.textAlign = "left";
+  if (state.gameMode === "wave") {
+    ctx.fillStyle = "#e8fcff";
+    ctx.font = "bold 14px Arial";
+    ctx.fillText("Wave Mode", width - 180, 46);
+  } else {
+    ctx.fillStyle = "#e8fcff";
+    ctx.font = "bold 14px Arial";
+    ctx.fillText("Level: " + levels[state.currentLevel].name, width - 200, 46);
   }
 }
 
-function drawFlash() {
-  if (state.flash > 0) {
-    ctx.fillStyle = "rgba(255,255,255," + state.flash * 0.44 + ")";
-    ctx.fillRect(0, 0, width, height);
-  }
+function drawGameOver() {
+  ctx.fillStyle = "rgba(0,0,0,0.5)";
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.fillStyle = "#ffffff";
+  ctx.textAlign = "center";
+  ctx.font = "bold 56px Arial";
+  ctx.fillText("Game Over", width / 2, height * 0.35);
+
+  ctx.fillStyle = "#ffd166";
+  ctx.font = "bold 32px Arial";
+  ctx.fillText("Score: " + Math.floor(state.score), width / 2, height * 0.48);
+
+  ctx.fillStyle = "#dffcff";
+  ctx.font = "bold 20px Arial";
+  ctx.fillText("Click or press space to return to menu", width / 2, height * 0.6);
+  ctx.textAlign = "left";
 }
 
 function render() {
@@ -515,10 +612,61 @@ function render() {
   drawGround();
   drawParticles();
   drawObstacles();
-  drawPlayer();
-  drawHud();
-  drawFlash();
+  
+  if (state.screen === "playing") {
+    drawPlayer();
+    drawPlaying();
+  } else if (state.screen === "menu") {
+    drawMenu();
+  } else if (state.screen === "levelSelect") {
+    drawLevelSelect();
+  } else if (state.screen === "gameover") {
+    drawPlayer();
+    drawGameOver();
+  }
 }
+
+canvas.addEventListener("click", (e) => {
+  if (state.screen === "menu") {
+    const rect = canvas.getBoundingClientRect();
+    const clickX = (e.clientX - rect.left) / dpr;
+    const clickY = (e.clientY - rect.top) / dpr;
+
+    const buttonWidth = 280;
+    const buttonHeight = 60;
+    const startY = height * 0.45;
+
+    if (clickX > width / 2 - buttonWidth / 2 && clickX < width / 2 + buttonWidth / 2) {
+      if (clickY > startY && clickY < startY + buttonHeight) {
+        state.screen = "levelSelect";
+      } else if (clickY > startY + 100 && clickY < startY + 100 + buttonHeight) {
+        startWaveMode();
+      }
+    }
+  } else if (state.screen === "levelSelect") {
+    const rect = canvas.getBoundingClientRect();
+    const clickX = (e.clientX - rect.left) / dpr;
+    const clickY = (e.clientY - rect.top) / dpr;
+
+    const buttonWidth = 220;
+    const buttonHeight = 70;
+    const cols = 3;
+    const startX = width / 2 - ((cols * (buttonWidth + 20)) / 2);
+    const startY = height * 0.22;
+
+    for (let i = 0; i < levels.length; i++) {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const x = startX + col * (buttonWidth + 20);
+      const y = startY + row * (buttonHeight + 20);
+
+      if (clickX > x && clickX < x + buttonWidth && clickY > y && clickY < y + buttonHeight) {
+        startLevel(i);
+        return;
+      }
+    }
+  }
+});
 
 let previous = 0;
 function loop(ts) {
@@ -529,7 +677,6 @@ function loop(ts) {
   requestAnimationFrame(loop);
 }
 
-reset();
 requestAnimationFrame(loop);
 </script>
 </body>

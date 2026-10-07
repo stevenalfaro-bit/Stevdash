@@ -25,63 +25,74 @@
     position: fixed;
     top: 20px;
     left: 20px;
-    font-size: 16px;
     z-index: 100;
     background: rgba(0,0,0,0.5);
-    padding: 10px 15px;
     border: 1px solid #8ae7ff;
-    border-radius: 4px;
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: 16px;
   }
   #score { color: #ffd166; font-weight: bold; }
   #mode { color: #8ae7ff; font-size: 12px; margin-top: 5px; }
 </style>
 </head>
 <body>
-<canvas id="canvas"></canvas>
-<div id="ui">
-  <div id="score">Score: 0</div>
-  <div id="mode"></div>
-</div>
+  <canvas id="canvas"></canvas>
+  <div id="ui">
+    <div id="score">Score: 0</div>
+    <div id="mode">Ready</div>
+  </div>
 
 <script>
 const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 
-let w = window.innerWidth, h = window.innerHeight;
-canvas.width = w;
-canvas.height = h;
+let W = window.innerWidth;
+let H = window.innerHeight;
+canvas.width = W;
+canvas.height = H;
 
-const GROUND_Y = h - 80;
-const GRAVITY = 1900;
-const JUMP_POWER = 760;
-const LOW_GRAVITY = 2600;
-const MAX_FALL = 1600;
+const groundHeight = 80;
+const groundY = H - groundHeight;
+const baseGravity = 2000;
+const lowJumpGravity = 2200;
+const jumpVelocity = 760;
+const maxFallSpeed = 1700;
+const coyoteTime = 0.12;
+const jumpBufferTime = 0.12;
 
 const levels = [
-  { name: 'Easy', speed: 300, spawnGap: 1.8, scale: 0.7 },
-  { name: 'Normal', speed: 420, spawnGap: 1.2, scale: 1.0 },
-  { name: 'Hard', speed: 540, spawnGap: 0.9, scale: 1.3 },
-  { name: 'Insane', speed: 660, spawnGap: 0.65, scale: 1.6 },
-  { name: 'Extreme', speed: 780, spawnGap: 0.45, scale: 2.0 }
+  { name: 'Easy', speed: 330, gap: 1.7, scale: 0.8 },
+  { name: 'Normal', speed: 440, gap: 1.25, scale: 1.0 },
+  { name: 'Hard', speed: 540, gap: 0.95, scale: 1.3 },
+  { name: 'Insane', speed: 650, gap: 0.72, scale: 1.6 },
+  { name: 'Extreme', speed: 760, gap: 0.54, scale: 2.0 }
 ];
 
-let gameState = 'menu';
-let currentLevel = 0;
-let score = 0;
-let gameTime = 0;
-let gameSpeed = 300;
-let spawnRate = 1.2;
-let isWaveMode = false;
-let jumpHeld = false;
+const state = {
+  screen: 'menu',
+  mode: 'none',
+  currentLevel: 0,
+  score: 0,
+  elapsed: 0,
+  speed: 330,
+  spawnTimer: 1.2,
+  jumpHeld: false,
+  wavePhase: 0,
+  lastSpawn: 0,
+  waveMode: false
+};
 
 const player = {
-  x: 100,
-  y: GROUND_Y,
+  x: 120,
+  y: groundY - 30,
   w: 28,
   h: 28,
   vy: 0,
   onGround: true,
-  coyoteTime: 0,
+  coyote: 0,
+  jumpBuffer: 0,
+  tilt: 0,
   rotation: 0
 };
 
@@ -89,405 +100,507 @@ const obstacles = [];
 const particles = [];
 const stars = [];
 
+function rand(min, max) {
+  return min + Math.random() * (max - min);
+}
+
+function resetPlayer() {
+  player.x = 120;
+  player.y = groundY - player.h;
+  player.vy = 0;
+  player.onGround = true;
+  player.coyote = coyoteTime;
+  player.jumpBuffer = 0;
+  player.tilt = 0;
+  player.rotation = 0;
+}
+
 function buildStars() {
   stars.length = 0;
-  for (let i = 0; i < 80; i++) {
+  for (let i = 0; i < 90; i++) {
     stars.push({
-      x: Math.random() * w,
-      y: Math.random() * (h * 0.7),
-      r: Math.random() * 2 + 1,
-      a: Math.random() * 0.7 + 0.3
+      x: Math.random() * W,
+      y: Math.random() * (H * 0.7),
+      r: rand(1, 2.5),
+      a: rand(0.3, 1)
     });
   }
 }
-buildStars();
 
-window.addEventListener('resize', () => {
-  w = window.innerWidth;
-  h = window.innerHeight;
-  canvas.width = w;
-  canvas.height = h;
-});
+function goMenu() {
+  state.screen = 'menu';
+  state.mode = 'none';
+  state.waveMode = false;
+  document.getElementById('mode').textContent = 'Ready';
+}
 
-function startLevel(lvl) {
-  gameState = 'playing';
-  currentLevel = lvl;
-  isWaveMode = false;
-  score = 0;
-  gameTime = 0;
-  gameSpeed = levels[lvl].speed;
-  spawnRate = levels[lvl].spawnGap;
-  player.x = 100;
-  player.y = GROUND_Y;
-  player.vy = 0;
-  player.onGround = true;
-  player.rotation = 0;
+function startLevel(levelIndex) {
+  const level = levels[levelIndex];
+  state.screen = 'playing';
+  state.mode = 'level';
+  state.waveMode = false;
+  state.currentLevel = levelIndex;
+  state.speed = level.speed;
+  state.spawnTimer = level.gap;
+  state.elapsed = 0;
+  state.score = 0;
   obstacles.length = 0;
   particles.length = 0;
-  document.getElementById('mode').textContent = 'Level: ' + levels[lvl].name;
+  resetPlayer();
+  document.getElementById('mode').textContent = 'Level: ' + level.name;
 }
 
 function startWave() {
-  gameState = 'playing';
-  isWaveMode = true;
-  score = 0;
-  gameTime = 0;
-  gameSpeed = 300;
-  spawnRate = 1.2;
-  player.x = 100;
-  player.y = GROUND_Y;
-  player.vy = 0;
-  player.onGround = true;
-  player.rotation = 0;
+  state.screen = 'playing';
+  state.mode = 'wave';
+  state.waveMode = true;
+  state.speed = 360;
+  state.spawnTimer = 1.0;
+  state.elapsed = 0;
+  state.score = 0;
   obstacles.length = 0;
   particles.length = 0;
+  resetPlayer();
   document.getElementById('mode').textContent = 'Wave Mode';
 }
 
-function addObstacle() {
-  const scale = isWaveMode ? 1.0 : levels[currentLevel].scale;
-  const type = Math.random() < 0.5 ? 'block' : 'spike';
-  const w_size = 24 * scale;
-  const h_size = 50 * scale;
-  
-  obstacles.push({
-    x: w + 30,
-    y: GROUND_Y - h_size,
-    w: w_size,
-    h: h_size,
-    type: type
-  });
+function canJump() {
+  return player.onGround || player.coyote > 0;
 }
 
 function jump() {
-  if (gameState !== 'playing') return;
-  if (player.onGround || player.coyoteTime > 0) {
-    player.vy = -JUMP_POWER;
+  if (state.screen !== 'playing') return;
+  player.jumpBuffer = jumpBufferTime;
+
+  if (canJump()) {
+    player.vy = -jumpVelocity;
     player.onGround = false;
-    player.coyoteTime = 0;
-    
-    for (let i = 0; i < 8; i++) {
-      particles.push({
-        x: player.x + player.w / 2,
-        y: player.y + player.h,
-        vx: (Math.random() - 0.5) * 100,
-        vy: Math.random() * -50 - 20,
-        life: 0.4,
-        color: i % 2 ? '#8ae7ff' : '#dffcff'
-      });
-    }
+    player.coyote = 0;
+    player.jumpBuffer = 0;
+    spawnBurst();
   }
 }
+
+function spawnBurst() {
+  for (let i = 0; i < 12; i++) {
+    particles.push({
+      x: player.x + player.w / 2,
+      y: player.y + player.h,
+      vx: rand(-90, 90),
+      vy: rand(-90, 25),
+      life: rand(0.2, 0.55),
+      size: rand(2, 6),
+      color: i % 2 === 0 ? '#dffcff' : '#8ae7ff'
+    });
+  }
+}
+
+function addObstacle() {
+  const level = levels[state.currentLevel] || { scale: 1.0 };
+  const scale = state.waveMode ? 1.0 : level.scale;
+  const type = Math.random() < 0.52 ? 'block' : 'spike';
+  const h = rand(30, 74) * scale;
+  const w = type === 'block' ? rand(24, 52) * scale : h * 0.7;
+
+  obstacles.push({
+    x: W + 30,
+    y: groundY - h,
+    w,
+    h,
+    type
+  });
+}
+
+function rectHit(a, b) {
+  return (
+    a.x < b.x + b.w &&
+    a.x + a.w > b.x &&
+    a.y < b.y + b.h &&
+    a.y + a.h > b.y
+  );
+}
+
+function onPointerDown() {
+  if (state.screen === 'menu') return;
+  if (state.screen === 'playing') {
+    jump();
+    return;
+  }
+  if (state.screen === 'gameover') {
+    goMenu();
+  }
+}
+
+document.addEventListener('pointerdown', onPointerDown);
 
 document.addEventListener('keydown', (e) => {
   if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') {
     e.preventDefault();
-    if (gameState === 'menu') {
-      drawLevelMenu();
-    } else if (gameState === 'levelSelect') {
-      // handle in input
-    } else {
+    if (state.screen === 'playing') {
       jump();
-      jumpHeld = true;
+      state.jumpHeld = true;
+    } else if (state.screen === 'gameover') {
+      goMenu();
     }
   }
 });
 
 document.addEventListener('keyup', (e) => {
   if (e.code === 'Space' || e.code === 'ArrowUp' || e.code === 'KeyW') {
-    jumpHeld = false;
+    state.jumpHeld = false;
   }
 });
 
-canvas.addEventListener('click', (e) => {
-  if (gameState === 'menu') {
-    const rect = canvas.getBoundingClientRect();
-    const x = (e.clientX - rect.left);
-    const y = (e.clientY - rect.top);
-    
-    // Play Levels button
-    if (x > w/2 - 100 && x < w/2 + 100 && y > h/2 - 80 && y < h/2 - 20) {
-      gameState = 'levelSelect';
+canvas.addEventListener('click', (event) => {
+  const rect = canvas.getBoundingClientRect();
+  const x = event.clientX - rect.left;
+  const y = event.clientY - rect.top;
+
+  if (state.screen === 'menu') {
+    const buttonW = 220;
+    const buttonH = 60;
+    const mx = W / 2;
+    const topY = H / 2 - 60;
+
+    if (x > mx - buttonW / 2 && x < mx + buttonW / 2 && y > topY && y < topY + buttonH) {
+      state.screen = 'levelSelect';
+      return;
     }
-    // Wave Mode button
-    if (x > w/2 - 100 && x < w/2 + 100 && y > h/2 + 20 && y < h/2 + 80) {
+
+    if (x > mx - buttonW / 2 && x < mx + buttonW / 2 && y > topY + 110 && y < topY + 110 + buttonH) {
       startWave();
+      return;
     }
-  } else if (gameState === 'levelSelect') {
-    const rect = canvas.getBoundingClientRect();
-    const x = (e.clientX - rect.left);
-    const y = (e.clientY - rect.top);
-    
-    const btnW = 120, btnH = 60;
+  }
+
+  if (state.screen === 'levelSelect') {
     const cols = 3;
-    const startX = w/2 - (cols * btnW + (cols-1)*10)/2;
-    const startY = h/2 - 80;
-    
+    const buttonW = 160;
+    const buttonH = 62;
+    const startX = W / 2 - ((cols * buttonW) + (cols - 1) * 14) / 2;
+    const startY = H / 2 - 90;
+
     for (let i = 0; i < levels.length; i++) {
       const col = i % cols;
       const row = Math.floor(i / cols);
-      const bx = startX + col * (btnW + 10);
-      const by = startY + row * (btnH + 10);
-      
-      if (x > bx && x < bx + btnW && y > by && y < by + btnH) {
+      const bx = startX + col * (buttonW + 14);
+      const by = startY + row * (buttonH + 14);
+
+      if (x > bx && x < bx + buttonW && y > by && y < by + buttonH) {
         startLevel(i);
         return;
       }
     }
-    
-    // Back button
-    if (x > w/2 - 50 && x < w/2 + 50 && y > h - 100) {
-      gameState = 'menu';
+
+    if (x > W / 2 - 60 && x < W / 2 + 60 && y > H - 90 && y < H - 50) {
+      goMenu();
     }
-  } else if (gameState === 'playing') {
-    jump();
-  } else if (gameState === 'gameover') {
-    gameState = 'menu';
+  }
+
+  if (state.screen === 'gameover') {
+    goMenu();
   }
 });
 
 function update(dt) {
-  if (gameState !== 'playing') return;
-  
-  gameTime += dt;
-  score += dt * 10;
-  
-  if (isWaveMode) {
-    gameSpeed = 300 + gameTime * 15;
-    player.rotation += dt * 180;
-    const wave = Math.sin(gameTime * 3) * 60;
-    player.y = GROUND_Y + wave - player.h/2;
+  if (state.screen !== 'playing') return;
+
+  state.elapsed += dt;
+  state.score += dt * 12;
+
+  player.jumpBuffer = Math.max(0, player.jumpBuffer - dt);
+  if (player.onGround) {
+    player.coyote = coyoteTime;
   } else {
-    gameSpeed = levels[currentLevel].speed + gameTime * 5;
+    player.coyote = Math.max(0, player.coyote - dt);
   }
-  
-  const gravity = jumpHeld && player.vy < 0 ? LOW_GRAVITY : GRAVITY;
-  player.vy += gravity * dt;
-  player.vy = Math.min(player.vy, MAX_FALL);
-  
-  if (!isWaveMode) {
+
+  if (player.jumpBuffer > 0 && canJump()) {
+    jump();
+  }
+
+  if (state.waveMode) {
+    state.wavePhase += dt * 6.5;
+    player.rotation += dt * 180;
+    const waveY = Math.sin(state.wavePhase) * 58;
+    player.y = groundY - player.h + waveY;
+    player.vy = 0;
+    player.onGround = false;
+  } else {
+    const gravity = (state.jumpHeld && player.vy < 0) ? lowJumpGravity : baseGravity;
+    player.vy += gravity * dt;
+    player.vy = Math.min(player.vy, maxFallSpeed);
     player.y += player.vy * dt;
-    
-    if (player.y + player.h >= GROUND_Y) {
-      player.y = GROUND_Y - player.h;
+
+    if (player.y + player.h >= groundY) {
+      player.y = groundY - player.h;
       player.vy = 0;
       player.onGround = true;
-      player.coyoteTime = 0.1;
     } else {
       player.onGround = false;
-      player.coyoteTime -= dt;
     }
   }
-  
-  let spawnTimer = 0;
-  if (!this.lastSpawn) this.lastSpawn = 0;
-  this.lastSpawn -= dt;
-  if (this.lastSpawn <= 0) {
+
+  const level = levels[state.currentLevel] || { speed: 360, gap: 1.4 };
+  const speed = state.waveMode ? 360 + state.elapsed * 15 : level.speed + state.elapsed * 8;
+  state.speed = speed;
+
+  state.spawnTimer -= dt;
+  if (state.spawnTimer <= 0) {
     addObstacle();
-    this.lastSpawn = spawnRate * (1 - gameTime / 60);
+    const baseGap = state.waveMode ? 1.0 : level.gap;
+    const adjustedGap = Math.max(0.45, baseGap - state.elapsed * 0.03);
+    state.spawnTimer = adjustedGap;
   }
-  
+
   for (let i = obstacles.length - 1; i >= 0; i--) {
-    obstacles[i].x -= gameSpeed * dt;
-    
-    if (obstacles[i].x < -50) {
+    const ob = obstacles[i];
+    ob.x -= state.speed * dt;
+    if (ob.x + ob.w < -20) {
       obstacles.splice(i, 1);
       continue;
     }
-    
-    if (collides(player, obstacles[i])) {
-      gameState = 'gameover';
-      for (let j = 0; j < 20; j++) {
+
+    if (rectHit(player, ob)) {
+      state.screen = 'gameover';
+      for (let j = 0; j < 24; j++) {
         particles.push({
-          x: player.x + player.w/2,
-          y: player.y + player.h/2,
-          vx: (Math.random()-0.5)*400,
-          vy: (Math.random()-0.5)*400,
-          life: 0.6,
-          color: j % 2 ? '#ff5a5a' : '#ff9d7a'
+          x: player.x + player.w / 2,
+          y: player.y + player.h / 2,
+          vx: rand(-260, 260),
+          vy: rand(-220, 80),
+          life: rand(0.5, 1),
+          size: rand(3, 9),
+          color: j % 2 === 0 ? '#8ae7ff' : '#ff5a5a'
         });
       }
+      break;
     }
   }
-  
+
   for (let i = particles.length - 1; i >= 0; i--) {
-    particles[i].x += particles[i].vx * dt;
-    particles[i].y += particles[i].vy * dt;
-    particles[i].vy += 600 * dt;
-    particles[i].life -= dt;
-    if (particles[i].life <= 0) particles.splice(i, 1);
+    const p = particles[i];
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += 540 * dt;
+    p.life -= dt;
+    if (p.life <= 0) particles.splice(i, 1);
   }
 }
 
-function collides(player, obstacle) {
-  return player.x < obstacle.x + obstacle.w &&
-         player.x + player.w > obstacle.x &&
-         player.y < obstacle.y + obstacle.h &&
-         player.y + player.h > obstacle.y;
-}
+function drawBackground() {
+  ctx.fillStyle = 'rgba(5, 11, 20, 1)';
+  ctx.fillRect(0, 0, W, H);
 
-function render() {
-  ctx.fillStyle = 'rgba(5,11,20,1)';
-  ctx.fillRect(0, 0, w, h);
-  
-  const glow = ctx.createRadialGradient(w*0.7, h*0.15, 20, w*0.7, h*0.15, 400);
-  glow.addColorStop(0, 'rgba(90,214,255,0.3)');
+  const glow = ctx.createRadialGradient(W * 0.7, H * 0.15, 20, W * 0.7, H * 0.15, 420);
+  glow.addColorStop(0, 'rgba(90,214,255,0.35)');
   glow.addColorStop(1, 'rgba(90,214,255,0)');
   ctx.fillStyle = glow;
-  ctx.fillRect(0, 0, w, h);
-  
+  ctx.fillRect(0, 0, W, H);
+
   for (const s of stars) {
     ctx.fillStyle = `rgba(255,255,255,${s.a})`;
     ctx.beginPath();
-    ctx.arc(s.x, s.y, s.r, 0, Math.PI*2);
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
     ctx.fill();
   }
-  
+}
+
+function drawGround() {
   ctx.fillStyle = '#1b2c3a';
-  ctx.fillRect(0, GROUND_Y, w, h - GROUND_Y);
-  
-  ctx.fillStyle = 'rgba(138,231,255,0.1)';
-  for (let x = 0; x < w; x += 40) {
-    ctx.fillRect(x, GROUND_Y + 30, 20, 6);
+  ctx.fillRect(0, groundY, W, H - groundY);
+
+  ctx.fillStyle = 'rgba(138,231,255,0.12)';
+  for (let x = 0; x < W + 60; x += 40) {
+    ctx.fillRect(x - ((state.elapsed * state.speed * 0.18) % 40), groundY + 28, 20, 8);
   }
-  
-  for (const obs of obstacles) {
-    ctx.fillStyle = '#ff5a5a';
-    if (obs.type === 'spike') {
+}
+
+function drawObstacles() {
+  for (const ob of obstacles) {
+    ctx.save();
+    ctx.translate(ob.x, ob.y);
+
+    if (ob.type === 'block') {
+      const g = ctx.createLinearGradient(0, 0, ob.w, ob.h);
+      g.addColorStop(0, '#ff9d7a');
+      g.addColorStop(1, '#ff5a5a');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, ob.w, ob.h);
+
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.fillRect(4, 4, ob.w - 8, 4);
+    } else {
+      ctx.fillStyle = '#ff5a5a';
       ctx.beginPath();
-      ctx.moveTo(obs.x, obs.y + obs.h);
-      ctx.lineTo(obs.x + obs.w/2, obs.y);
-      ctx.lineTo(obs.x + obs.w, obs.y + obs.h);
+      ctx.moveTo(0, ob.h);
+      ctx.lineTo(ob.w / 2, 0);
+      ctx.lineTo(ob.w, ob.h);
       ctx.closePath();
       ctx.fill();
-    } else {
-      ctx.fillRect(obs.x, obs.y, obs.w, obs.h);
     }
+
+    ctx.restore();
   }
-  
+}
+
+function drawParticles() {
   for (const p of particles) {
     ctx.globalAlpha = Math.max(0, p.life);
     ctx.fillStyle = p.color;
-    ctx.fillRect(p.x, p.y, 4, 4);
+    ctx.fillRect(p.x, p.y, p.size, p.size);
   }
   ctx.globalAlpha = 1;
-  
-  ctx.save();
-  ctx.translate(player.x + player.w/2, player.y + player.h/2);
-  ctx.rotate(player.rotation * Math.PI / 180);
-  const grad = ctx.createLinearGradient(-player.w/2, -player.h/2, player.w/2, player.h/2);
-  grad.addColorStop(0, '#dffcff');
-  grad.addColorStop(1, '#8ae7ff');
-  ctx.fillStyle = grad;
-  ctx.fillRect(-player.w/2, -player.h/2, player.w, player.h);
-  ctx.restore();
-  
-  document.getElementById('score').textContent = 'Score: ' + Math.floor(score);
-  
-  if (gameState === 'menu') {
-    ctx.fillStyle = 'rgba(0,0,0,0.7)';
-    ctx.fillRect(0, 0, w, h);
-    
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 64px Arial';
-    ctx.textAlign = 'center';
-    ctx.fillText('Stevdash', w/2, h/2 - 120);
-    
-    ctx.fillStyle = '#ffd166';
-    ctx.font = '20px Arial';
-    ctx.fillText('Choose Game Mode', w/2, h/2 - 20);
-    
-    ctx.fillStyle = '#8ae7ff';
-    ctx.strokeStyle = '#8ae7ff';
-    ctx.lineWidth = 2;
-    ctx.fillRect(w/2 - 100, h/2 - 80, 200, 50);
-    ctx.strokeRect(w/2 - 100, h/2 - 80, 200, 50);
-    ctx.fillStyle = '#000';
-    ctx.font = '18px Arial';
-    ctx.fillText('Play Levels', w/2, h/2 - 50);
-    
-    ctx.fillStyle = '#ff9d7a';
-    ctx.strokeStyle = '#ff9d7a';
-    ctx.fillRect(w/2 - 100, h/2 + 20, 200, 50);
-    ctx.strokeRect(w/2 - 100, h/2 + 20, 200, 50);
-    ctx.fillStyle = '#000';
-    ctx.fillText('Wave Mode', w/2, h/2 + 50);
-    
-    ctx.textAlign = 'left';
-  } else if (gameState === 'levelSelect') {
-    ctx.fillStyle = 'rgba(0,0,0,0.7)';
-    ctx.fillRect(0, 0, w, h);
-    
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 48px Arial';
-    ctx.textAlign = 'center';
-    ctx.fillText('Select Level', w/2, 80);
-    
-    const btnW = 120, btnH = 60;
-    const cols = 3;
-    const startX = w/2 - (cols * btnW + (cols-1)*10)/2;
-    const startY = h/2 - 80;
-    
-    for (let i = 0; i < levels.length; i++) {
-      const col = i % cols;
-      const row = Math.floor(i / cols);
-      const bx = startX + col * (btnW + 10);
-      const by = startY + row * (btnH + 10);
-      
-      ctx.fillStyle = '#ff5a5a';
-      ctx.strokeStyle = '#ff9d7a';
-      ctx.lineWidth = 2;
-      ctx.fillRect(bx, by, btnW, btnH);
-      ctx.strokeRect(bx, by, btnW, btnH);
-      
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 16px Arial';
-      ctx.textAlign = 'center';
-      ctx.fillText(levels[i].name, bx + btnW/2, by + btnH/2 + 5);
-    }
-    
-    ctx.fillStyle = '#dffcff';
-    ctx.strokeStyle = '#dffcff';
-    ctx.lineWidth = 2;
-    ctx.fillRect(w/2 - 50, h - 80, 100, 40);
-    ctx.strokeRect(w/2 - 50, h - 80, 100, 40);
-    ctx.fillStyle = '#000';
-    ctx.font = '14px Arial';
-    ctx.fillText('Back', w/2, h - 50);
-    
-    ctx.textAlign = 'left';
-  } else if (gameState === 'gameover') {
-    ctx.fillStyle = 'rgba(0,0,0,0.7)';
-    ctx.fillRect(0, 0, w, h);
-    
-    ctx.fillStyle = '#fff';
-    ctx.font = 'bold 56px Arial';
-    ctx.textAlign = 'center';
-    ctx.fillText('Game Over', w/2, h/2 - 60);
-    
-    ctx.fillStyle = '#ffd166';
-    ctx.font = '28px Arial';
-    ctx.fillText('Score: ' + Math.floor(score), w/2, h/2 + 20);
-    
-    ctx.fillStyle = '#dffcff';
-    ctx.font = '16px Arial';
-    ctx.fillText('Click to return to menu', w/2, h/2 + 80);
-    
-    ctx.textAlign = 'left';
-  }
 }
 
-let lastTime = 0;
-function loop(t) {
-  const dt = Math.min((t - lastTime) / 1000, 0.016) || 0.016;
-  lastTime = t;
-  
+function drawPlayer() {
+  ctx.save();
+  ctx.translate(player.x + player.w / 2, player.y + player.h / 2);
+  ctx.rotate((player.rotation * Math.PI) / 180);
+
+  const g = ctx.createLinearGradient(-player.w / 2, -player.h / 2, player.w / 2, player.h / 2);
+  g.addColorStop(0, '#dffcff');
+  g.addColorStop(1, '#8ae7ff');
+  ctx.fillStyle = g;
+  ctx.fillRect(-player.w / 2, -player.h / 2, player.w, player.h);
+
+  ctx.fillStyle = 'rgba(10,20,32,0.4)';
+  ctx.fillRect(-player.w * 0.18, -player.h * 0.1, player.w * 0.28, player.h * 0.3);
+  ctx.restore();
+}
+
+function drawMenu() {
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 64px Arial';
+  ctx.fillText('Stevdash', W / 2, H / 2 - 120);
+
+  const buttonW = 220;
+  const buttonH = 60;
+  const baseY = H / 2 - 60;
+
+  ctx.fillStyle = '#8ae7ff';
+  ctx.strokeStyle = '#8ae7ff';
+  ctx.lineWidth = 2;
+  ctx.fillRect(W / 2 - buttonW / 2, baseY, buttonW, buttonH);
+  ctx.strokeRect(W / 2 - buttonW / 2, baseY, buttonW, buttonH);
+  ctx.fillStyle = '#000';
+  ctx.font = 'bold 18px Arial';
+  ctx.fillText('Play Levels', W / 2, baseY + 38);
+
+  ctx.fillStyle = '#ff9d7a';
+  ctx.strokeStyle = '#ff9d7a';
+  ctx.fillRect(W / 2 - buttonW / 2, baseY + 110, buttonW, buttonH);
+  ctx.strokeRect(W / 2 - buttonW / 2, baseY + 110, buttonW, buttonH);
+  ctx.fillStyle = '#000';
+  ctx.fillText('Wave Mode', W / 2, baseY + 148);
+}
+
+function drawLevelSelect() {
+  ctx.fillStyle = 'rgba(0,0,0,0.62)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 50px Arial';
+  ctx.fillText('Select Level', W / 2, 90);
+
+  const cols = 3;
+  const btnW = 160;
+  const btnH = 62;
+  const gap = 14;
+  const startX = W / 2 - ((cols * btnW) + (cols - 1) * gap) / 2;
+  const startY = H / 2 - 90;
+
+  for (let i = 0; i < levels.length; i++) {
+    const col = i % cols;
+    const row = Math.floor(i / cols);
+    const x = startX + col * (btnW + gap);
+    const y = startY + row * (btnH + gap);
+
+    ctx.fillStyle = '#ff5a5a';
+    ctx.strokeStyle = '#ff9d7a';
+    ctx.lineWidth = 2;
+    ctx.fillRect(x, y, btnW, btnH);
+    ctx.strokeRect(x, y, btnW, btnH);
+
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 18px Arial';
+    ctx.fillText(levels[i].name, x + btnW / 2, y + btnH / 2 + 5);
+  }
+
+  ctx.fillStyle = '#dffcff';
+  ctx.strokeStyle = '#dffcff';
+  ctx.fillRect(W / 2 - 60, H - 90, 120, 42);
+  ctx.strokeRect(W / 2 - 60, H - 90, 120, 42);
+  ctx.fillStyle = '#000';
+  ctx.font = 'bold 16px Arial';
+  ctx.fillText('Back', W / 2, H - 60);
+}
+
+function drawGameOver() {
+  ctx.fillStyle = 'rgba(0,0,0,0.68)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 56px Arial';
+  ctx.fillText('Game Over', W / 2, H / 2 - 40);
+
+  ctx.fillStyle = '#ffd166';
+  ctx.font = 'bold 28px Arial';
+  ctx.fillText('Score: ' + Math.floor(state.score), W / 2, H / 2 + 20);
+
+  ctx.fillStyle = '#dffcff';
+  ctx.font = '16px Arial';
+  ctx.fillText('Click to return to menu', W / 2, H / 2 + 70);
+}
+
+function drawHud() {
+  const scoreEl = document.getElementById('score');
+  scoreEl.textContent = 'Score: ' + Math.floor(state.score);
+}
+
+function render() {
+  drawBackground();
+  drawGround();
+  drawObstacles();
+  drawParticles();
+
+  if (state.screen === 'playing' || state.screen === 'gameover') {
+    drawPlayer();
+  }
+
+  if (state.screen === 'menu') drawMenu();
+  if (state.screen === 'levelSelect') drawLevelSelect();
+  if (state.screen === 'gameover') drawGameOver();
+
+  drawHud();
+}
+
+function resize() {
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width = W;
+  canvas.height = H;
+  buildStars();
+}
+window.addEventListener('resize', resize);
+resize();
+
+let last = 0;
+function loop(ts) {
+  const dt = Math.min(0.033, (ts - last) / 1000 || 0.016);
+  last = ts;
   update(dt);
   render();
-  
   requestAnimationFrame(loop);
 }
 
+goMenu();
 requestAnimationFrame(loop);
 </script>
 </body>

@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stevdash</title>
+<style>
+  :root{
+    --bg1:#060915;
+    --bg2:#131d2d;
+    --sky:#5ad6ff;
+    --ground:#0b1320;
+    --ground2:#161f2e;
+    --player:#7ef0ff;
+    --player2:#b8fbff;
+    --danger:#ff4d4d;
+    --danger2:#ff8a8a;
+    --accent:#ffd166;
+    --panel:rgba(10,16,25,0.56);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg1);
+    color: white;
+    font-family: Arial, Helvetica, sans-serif;
+    touch-action: none;
+    user-select: none;
+  }
+  canvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    background: linear-gradient(#060915 0%, #0e1c2c 40%, #0a1321 100%);
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+let width = 0;
+let height = 0;
+let dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+let state = "playing";
+let score = 0;
+let best = 0;
+let speed = 360;
+let elapsed = 0;
+let flash = 0;
+let startTime = 0;
+
+const groundHeight = 72;
+const gravity = 1680;
+const jumpForce = 740;
+
+const player = {
+  x: 140,
+  y: 0,
+  w: 30,
+  h: 30,
+  vy: 0,
+  color: "#7ef0ff"
+};
+
+const particles = [];
+const stars = [];
+const obstacles = [];
+
+function resize() {
+  width = window.innerWidth;
+  height = window.innerHeight;
+  canvas.width = Math.floor(width * dpr);
+  canvas.height = Math.floor(height * dpr);
+  canvas.style.width = width + "px";
+  canvas.style.height = height + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  if (player.y === 0) {
+    player.y = height - groundHeight - player.h;
+  }
+}
+window.addEventListener("resize", resize);
+resize();
+
+function rand(min, max) {
+  return Math.random() * (max - min) + min;
+}
+
+function makeStars() {
+  stars.length = 0;
+  const count = Math.min(120, Math.max(60, Math.floor(width / 18)));
+  for (let i = 0; i < count; i++) {
+    stars.push({
+      x: Math.random() * width,
+      y: Math.random() * (height * 0.7),
+      r: rand(1, 2.6),
+      a: rand(0.3, 1),
+      s: rand(0.4, 1.4)
+    });
+  }
+}
+makeStars();
+
+function resetGame() {
+  state = "playing";
+  score = 0;
+  elapsed = 0;
+  flash = 0;
+  speed = 360;
+  obstacles.length = 0;
+  particles.length = 0;
+  player.x = 140;
+  player.y = height - groundHeight - player.h;
+  player.vy = 0;
+}
+
+function jump() {
+  if (state === "gameover") {
+    resetGame();
+    return;
+  }
+  if (player.y + player.h >= height - groundHeight - 2) {
+    player.vy = -jumpForce;
+  }
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW") {
+    e.preventDefault();
+    jump();
+  }
+  if (e.code === "KeyR" && state === "gameover") {
+    resetGame();
+  }
+});
+
+document.addEventListener("pointerdown", (e) => {
+  if (e.target === canvas) {
+    jump();
+  }
+});
+
+function addObstacle() {
+  const roll = Math.random();
+  if (roll < 0.5) {
+    const w = rand(20, 48);
+    const h = rand(26, 72);
+    obstacles.push({
+      x: width + 40,
+      y: height - groundHeight - h,
+      w,
+      h,
+      type: "block",
+      color: "#ff5d5d"
+    });
+  } else {
+    const h = rand(26, 60);
+    obstacles.push({
+      x: width + 40,
+      y: height - groundHeight - h,
+      w: h * 0.7,
+      h,
+      type: "spike",
+      color: "#ff7a7a"
+    });
+  }
+}
+
+function spawnPattern() {
+  const gap = Math.max(0.82, 1.4 - Math.min(0.5, elapsed / 40));
+  return gap;
+}
+
+let spawnTimer = 0.9;
+let lastTime = 0;
+
+function update(dt) {
+  elapsed += dt;
+
+  if (state !== "playing") {
+    flash = Math.max(0, flash - dt * 3);
+    return;
+  }
+
+  score += dt * 10;
+
+  speed = Math.min(980, 360 + elapsed * 8.5);
+
+  player.vy += gravity * dt;
+  player.y += player.vy * dt;
+
+  const floorY = height - groundHeight;
+  if (player.y + player.h > floorY) {
+    player.y = floorY - player.h;
+    player.vy = 0;
+  }
+
+  spawnTimer -= dt;
+  if (spawnTimer <= 0) {
+    addObstacle();
+    spawnTimer = spawnPattern();
+  }
+
+  for (let i = obstacles.length - 1; i >= 0; i--) {
+    const ob = obstacles[i];
+    ob.x -= speed * dt;
+
+    if (ob.x + ob.w < -10) {
+      obstacles.splice(i, 1);
+      continue;
+    }
+
+    if (rectHit(player, ob)) {
+      state = "gameover";
+      best = Math.max(best, Math.floor(score));
+      flash = 1;
+      for (let j = 0; j < 22; j++) {
+        particles.push({
+          x: player.x + player.w * 0.5,
+          y: player.y + player.h * 0.5,
+          vx: rand(-260, 260),
+          vy: rand(-260, 80),
+          life: rand(0.35, 0.9),
+          size: rand(3, 9),
+          color: j % 2 === 0 ? "#7ef0ff" : "#ff7a7a"
+        });
+      }
+      break;
+    }
+  }
+
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += 360 * dt;
+    p.life -= dt;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+
+function rectHit(a, b) {
+  return (
+    a.x < b.x + b.w &&
+    a.x + a.w > b.x &&
+    a.y < b.y + b.h &&
+    a.y + a.h > b.y
+  );
+}
+
+function drawBackground() {
+  const sky = ctx.createLinearGradient(0, 0, 0, height);
+  sky.addColorStop(0, "#060915");
+  sky.addColorStop(0.5, "#0d1a2b");
+  sky.addColorStop(1, "#111d2d");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, width, height);
+
+  for (const s of stars) {
+    ctx.fillStyle = "rgba(255,255,255," + s.a + ")";
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r * s.s, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const glow = ctx.createRadialGradient(width * 0.75, height * 0.18, 30, width * 0.75, height * 0.18, 380);
+  glow.addColorStop(0, "rgba(92, 221, 255, 0.42)");
+  glow.addColorStop(1, "rgba(92, 221, 255, 0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, width, height);
+
+  const gridAlpha = 0.08 + Math.sin(elapsed * 2) * 0.02;
+  ctx.strokeStyle = "rgba(133,191,255," + gridAlpha + ")";
+  ctx.lineWidth = 1;
+  for (let x = 0; x < width; x += 44) {
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, height);
+    ctx.stroke();
+  }
+}
+
+function drawGround() {
+  const groundY = height - groundHeight;
+  const grad = ctx.createLinearGradient(0, groundY, 0, height);
+  grad.addColorStop(0, "#1d2c3d");
+  grad.addColorStop(1, "#0b1320");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, groundY, width, groundHeight);
+
+  ctx.fillStyle = "#0f1f2c";
+  ctx.fillRect(0, groundY + 22, width, 3);
+
+  const stripeOffset = (elapsed * speed * 0.18) % 34;
+  ctx.fillStyle = "rgba(126, 240, 255, 0.15)";
+  for (let x = -34; x < width + 34; x += 34) {
+    ctx.fillRect(x - stripeOffset, groundY + 30, 18, 8);
+  }
+
+  ctx.fillStyle = "rgba(255,255,255,0.12)";
+  ctx.fillRect(0, groundY + groundHeight - 1, width, 1);
+}
+
+function drawPlayer() {
+  const x = player.x;
+  const y = player.y;
+
+  ctx.save();
+  ctx.translate(x + player.w / 2, y + player.h / 2);
+
+  const shape = ctx.createLinearGradient(-player.w / 2, -player.h / 2, player.w / 2, player.h / 2);
+  shape.addColorStop(0, "#b8fbff");
+  shape.addColorStop(1, "#7ef0ff");
+  ctx.fillStyle = shape;
+
+  const pulse = 1 + Math.sin(elapsed * 12) * 0.04;
+  ctx.scale(pulse, pulse);
+  ctx.fillRect(-player.w / 2, -player.h / 2, player.w, player.h);
+
+  ctx.fillStyle = "rgba(15, 28, 36, 0.55)";
+  ctx.fillRect(-player.w * 0.18, -player.h * 0.14, player.w * 0.28, player.h * 0.32);
+
+  ctx.restore();
+}
+
+function drawObstacles() {
+  for (const ob of obstacles) {
+    ctx.save();
+    ctx.translate(ob.x, ob.y);
+    if (ob.type === "block") {
+      const grad = ctx.createLinearGradient(0, 0, ob.w, ob.h);
+      grad.addColorStop(0, "#ff8a8a");
+      grad.addColorStop(1, "#ff4d4d");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, ob.w, ob.h);
+
+      ctx.fillStyle = "rgba(255,255,255,0.15)";
+      ctx.fillRect(4, 4, ob.w - 8, 6);
+
+      ctx.fillStyle = "rgba(0,0,0,0.25)";
+      ctx.fillRect(0, ob.h - 6, ob.w, 6);
+    } else {
+      ctx.fillStyle = "#ff4d4d";
+      ctx.beginPath();
+      ctx.moveTo(0, ob.h);
+      ctx.lineTo(ob.w / 2, 0);
+      ctx.lineTo(ob.w, ob.h);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = "rgba(255,255,255,0.08)";
+      ctx.fillRect(0, ob.h - 6, ob.w, 6);
+    }
+    ctx.restore();
+  }
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    ctx.fillStyle = p.color;
+    ctx.globalAlpha = Math.max(0, p.life * 1.5);
+    ctx.fillRect(p.x, p.y, p.size, p.size);
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawHud() {
+  ctx.fillStyle = "rgba(9, 13, 20, 0.34)";
+  ctx.fillRect(16, 18, 180, 44);
+  ctx.strokeStyle = "rgba(126,240,255,0.5)";
+  ctx.strokeRect(16, 18, 180, 44);
+
+  ctx.fillStyle = "#dffcff";
+  ctx.font = "bold 18px Arial";
+  ctx.fillText("Stevdash", 28, 46);
+
+  ctx.fillStyle = "#ffd166";
+  ctx.font = "bold 16px Arial";
+  ctx.fillText("Score: " + Math.floor(score), 28, 58);
+
+  if (state === "gameover") {
+    ctx.fillStyle = "rgba(0,0,0,0.38)";
+    ctx.fillRect(width * 0.2, height * 0.28, width * 0.6, height * 0.24);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.textAlign = "center";
+    ctx.font = "bold 48px Arial";
+    ctx.fillText("Stevdash", width / 2, height * 0.42);
+
+    ctx.fillStyle = "#ffd166";
+    ctx.font = "bold 26px Arial";
+    ctx.fillText("Score: " + Math.floor(score), width / 2, height * 0.52);
+
+    ctx.font = "bold 18px Arial";
+    ctx.fillStyle = "#dffcff";
+    ctx.fillText("Click or press space to restart", width / 2, height * 0.58);
+    ctx.textAlign = "left";
+  }
+}
+
+function drawFlash() {
+  if (flash > 0) {
+    ctx.fillStyle = "rgba(255,255,255," + flash * 0.42 + ")";
+    ctx.fillRect(0, 0, width, height);
+  }
+}
+
+function render() {
+  drawBackground();
+  drawGround();
+  drawParticles();
+  drawObstacles();
+  drawPlayer();
+  drawHud();
+  drawFlash();
+}
+
+let previous = 0;
+function loop(ts) {
+  const dt = Math.min(0.03, (ts - previous) / 1000 || 0.016);
+  previous = ts;
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+resetGame();
+</script>
+</body>
+</html>

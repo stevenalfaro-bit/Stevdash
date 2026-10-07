@@ -5,20 +5,22 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Stevdash</title>
 <style>
-  :root{
-    --bg1:#060915;
-    --bg2:#131d2d;
-    --sky:#5ad6ff;
-    --ground:#0b1320;
-    --ground2:#161f2e;
-    --player:#7ef0ff;
-    --player2:#b8fbff;
-    --danger:#ff4d4d;
-    --danger2:#ff8a8a;
-    --accent:#ffd166;
-    --panel:rgba(10,16,25,0.56);
+  :root {
+    --bg1: #050b14;
+    --bg2: #0b1630;
+    --bg3: #111e3c;
+    --ground: #111827;
+    --ground2: #1f2d3d;
+    --player1: #8ae7ff;
+    --player2: #dffcff;
+    --danger1: #ff5a5a;
+    --danger2: #ff9c80;
+    --gold: #ffd166;
+    --panel: rgba(10, 16, 25, 0.55);
   }
+
   * { box-sizing: border-box; }
+
   html, body {
     margin: 0;
     width: 100%;
@@ -30,11 +32,12 @@
     touch-action: none;
     user-select: none;
   }
+
   canvas {
     display: block;
     width: 100vw;
     height: 100vh;
-    background: linear-gradient(#060915 0%, #0e1c2c 40%, #0a1321 100%);
+    background: linear-gradient(180deg, var(--bg1) 0%, var(--bg2) 45%, var(--bg3) 100%);
     cursor: pointer;
   }
 </style>
@@ -49,30 +52,41 @@ let width = 0;
 let height = 0;
 let dpr = Math.min(window.devicePixelRatio || 1, 2);
 
-let state = "playing";
-let score = 0;
-let best = 0;
-let speed = 360;
-let elapsed = 0;
-let flash = 0;
-let startTime = 0;
-
 const groundHeight = 72;
-const gravity = 1680;
-const jumpForce = 740;
+const baseGravity = 1900;
+const jumpVelocity = 760;
+const lowJumpGravity = 2600;
+const maxFallSpeed = 1600;
 
-const player = {
-  x: 140,
-  y: 0,
-  w: 30,
-  h: 30,
-  vy: 0,
-  color: "#7ef0ff"
+const state = {
+  mode: "ready",
+  score: 0,
+  speed: 360,
+  elapsed: 0,
+  flash: 0,
+  spawnTimer: 1.1,
+  jumpHeld: false,
+  best: 0
 };
 
-const particles = [];
+const player = {
+  x: 150,
+  y: 0,
+  w: 32,
+  h: 32,
+  vy: 0,
+  onGround: false,
+  groundedTimer: 0,
+  coyote: 0
+};
+
 const stars = [];
 const obstacles = [];
+const particles = [];
+
+function rand(min, max) {
+  return Math.random() * (max - min) + min;
+}
 
 function resize() {
   width = window.innerWidth;
@@ -84,166 +98,148 @@ function resize() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   if (player.y === 0) {
-    player.y = height - groundHeight - player.h;
+    resetPlayerToGround();
   }
 }
 window.addEventListener("resize", resize);
 resize();
 
-function rand(min, max) {
-  return Math.random() * (max - min) + min;
+function resetPlayerToGround() {
+  player.y = height - groundHeight - player.h;
+  player.vy = 0;
+  player.onGround = true;
+  player.groundedTimer = 0;
+  player.coyote = 0;
 }
 
-function makeStars() {
+function buildStars() {
   stars.length = 0;
-  const count = Math.min(120, Math.max(60, Math.floor(width / 18)));
+  const count = Math.max(60, Math.min(140, Math.floor(width / 18)));
   for (let i = 0; i < count; i++) {
     stars.push({
       x: Math.random() * width,
-      y: Math.random() * (height * 0.7),
-      r: rand(1, 2.6),
+      y: Math.random() * (height * 0.68),
+      r: rand(1.1, 2.8),
       a: rand(0.3, 1),
-      s: rand(0.4, 1.4)
+      s: rand(0.7, 1.7)
     });
   }
 }
-makeStars();
+buildStars();
 
-function resetGame() {
-  state = "playing";
-  score = 0;
-  elapsed = 0;
-  flash = 0;
-  speed = 360;
+function reset() {
+  state.mode = "ready";
+  state.score = 0;
+  state.speed = 360;
+  state.elapsed = 0;
+  state.flash = 0;
+  state.spawnTimer = 1.1;
+  state.jumpHeld = false;
   obstacles.length = 0;
   particles.length = 0;
-  player.x = 140;
-  player.y = height - groundHeight - player.h;
+  player.x = 170;
   player.vy = 0;
+  resetPlayerToGround();
+}
+
+function startRun() {
+  if (state.mode === "playing") return;
+  if (state.mode === "gameover") {
+    reset();
+  }
+  state.mode = "playing";
+  player.vy = 0;
+  jump();
 }
 
 function jump() {
-  if (state === "gameover") {
-    resetGame();
+  if (state.mode === "ready") {
+    startRun();
     return;
   }
-  if (player.y + player.h >= height - groundHeight - 2) {
-    player.vy = -jumpForce;
+
+  if (state.mode !== "playing") return;
+
+  if (player.onGround || player.coyote > 0) {
+    player.vy = -jumpVelocity;
+    player.onGround = false;
+    player.coyote = 0;
+    state.jumpHeld = true;
+    for (let i = 0; i < 12; i++) {
+      particles.push({
+        x: player.x + player.w * 0.5,
+        y: player.y + player.h,
+        vx: rand(-60, 60),
+        vy: rand(-50, 30),
+        life: rand(0.2, 0.55),
+        size: rand(2, 6),
+        color: i % 2 === 0 ? "#dffcff" : "#8ae7ff"
+      });
+    }
   }
 }
 
+function onPointerDown() {
+  if (state.mode === "ready") {
+    startRun();
+    return;
+  }
+  if (state.mode === "gameover") {
+    reset();
+    startRun();
+    return;
+  }
+  jump();
+}
+
+document.addEventListener("pointerdown", onPointerDown);
 document.addEventListener("keydown", (e) => {
   if (e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW") {
     e.preventDefault();
-    jump();
+    if (state.mode === "ready") {
+      startRun();
+    } else if (state.mode === "gameover") {
+      reset();
+      startRun();
+    } else {
+      jump();
+    }
   }
-  if (e.code === "KeyR" && state === "gameover") {
-    resetGame();
+
+  if (e.code === "ArrowUp" || e.code === "KeyW") {
+    state.jumpHeld = true;
   }
 });
 
-document.addEventListener("pointerdown", (e) => {
-  if (e.target === canvas) {
-    jump();
+document.addEventListener("keyup", (e) => {
+  if (e.code === "Space" || e.code === "ArrowUp" || e.code === "KeyW") {
+    state.jumpHeld = false;
   }
 });
 
 function addObstacle() {
-  const roll = Math.random();
-  if (roll < 0.5) {
-    const w = rand(20, 48);
-    const h = rand(26, 72);
+  const coinFlip = Math.random();
+  if (coinFlip < 0.55) {
+    const w = rand(24, 54);
+    const h = rand(28, 80);
     obstacles.push({
-      x: width + 40,
+      x: width + 30,
       y: height - groundHeight - h,
       w,
       h,
       type: "block",
-      color: "#ff5d5d"
+      color: "#ff5a5a"
     });
   } else {
-    const h = rand(26, 60);
+    const h = rand(28, 70);
     obstacles.push({
-      x: width + 40,
+      x: width + 30,
       y: height - groundHeight - h,
-      w: h * 0.7,
+      w: h * 0.72,
       h,
       type: "spike",
-      color: "#ff7a7a"
+      color: "#ff7b7b"
     });
-  }
-}
-
-function spawnPattern() {
-  const gap = Math.max(0.82, 1.4 - Math.min(0.5, elapsed / 40));
-  return gap;
-}
-
-let spawnTimer = 0.9;
-let lastTime = 0;
-
-function update(dt) {
-  elapsed += dt;
-
-  if (state !== "playing") {
-    flash = Math.max(0, flash - dt * 3);
-    return;
-  }
-
-  score += dt * 10;
-
-  speed = Math.min(980, 360 + elapsed * 8.5);
-
-  player.vy += gravity * dt;
-  player.y += player.vy * dt;
-
-  const floorY = height - groundHeight;
-  if (player.y + player.h > floorY) {
-    player.y = floorY - player.h;
-    player.vy = 0;
-  }
-
-  spawnTimer -= dt;
-  if (spawnTimer <= 0) {
-    addObstacle();
-    spawnTimer = spawnPattern();
-  }
-
-  for (let i = obstacles.length - 1; i >= 0; i--) {
-    const ob = obstacles[i];
-    ob.x -= speed * dt;
-
-    if (ob.x + ob.w < -10) {
-      obstacles.splice(i, 1);
-      continue;
-    }
-
-    if (rectHit(player, ob)) {
-      state = "gameover";
-      best = Math.max(best, Math.floor(score));
-      flash = 1;
-      for (let j = 0; j < 22; j++) {
-        particles.push({
-          x: player.x + player.w * 0.5,
-          y: player.y + player.h * 0.5,
-          vx: rand(-260, 260),
-          vy: rand(-260, 80),
-          life: rand(0.35, 0.9),
-          size: rand(3, 9),
-          color: j % 2 === 0 ? "#7ef0ff" : "#ff7a7a"
-        });
-      }
-      break;
-    }
-  }
-
-  for (let i = particles.length - 1; i >= 0; i--) {
-    const p = particles[i];
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
-    p.vy += 360 * dt;
-    p.life -= dt;
-    if (p.life <= 0) particles.splice(i, 1);
   }
 }
 
@@ -256,11 +252,96 @@ function rectHit(a, b) {
   );
 }
 
+function update(dt) {
+  state.elapsed += dt;
+
+  if (state.mode === "ready") {
+    state.flash = Math.max(0, state.flash - dt * 2.8);
+    return;
+  }
+
+  if (state.mode === "gameover") {
+    state.flash = Math.max(0, state.flash - dt * 3.5);
+    return;
+  }
+
+  state.score += dt * 11.5;
+  state.speed = Math.min(1120, 360 + state.elapsed * 10.4);
+
+  const gravity = state.jumpHeld && player.vy < 0 ? lowJumpGravity : baseGravity;
+  player.vy += gravity * dt;
+  player.vy = Math.min(player.vy, maxFallSpeed);
+  player.y += player.vy * dt;
+
+  const floorY = height - groundHeight;
+  if (player.y + player.h >= floorY) {
+    player.y = floorY - player.h;
+    player.vy = 0;
+    player.onGround = true;
+    player.groundedTimer = 0.08;
+  } else {
+    player.onGround = false;
+  }
+
+  if (player.groundedTimer > 0) {
+    player.groundedTimer -= dt;
+  }
+  if (!player.onGround) {
+    player.coyote = Math.max(0, player.coyote - dt);
+  } else {
+    player.coyote = 0.12;
+  }
+
+  state.spawnTimer -= dt;
+  if (state.spawnTimer <= 0) {
+    addObstacle();
+    const pace = Math.max(0.72, 1.28 - Math.min(0.5, state.elapsed / 30));
+    state.spawnTimer = pace;
+  }
+
+  for (let i = obstacles.length - 1; i >= 0; i--) {
+    const ob = obstacles[i];
+    ob.x -= state.speed * dt;
+
+    if (ob.x + ob.w < -10) {
+      obstacles.splice(i, 1);
+      continue;
+    }
+
+    if (rectHit(player, ob)) {
+      state.mode = "gameover";
+      state.flash = 1;
+      state.best = Math.max(state.best, Math.floor(state.score));
+      for (let j = 0; j < 24; j++) {
+        particles.push({
+          x: player.x + player.w * 0.5,
+          y: player.y + player.h * 0.5,
+          vx: rand(-300, 300),
+          vy: rand(-220, 120),
+          life: rand(0.4, 0.9),
+          size: rand(3, 9),
+          color: j % 2 === 0 ? "#8ae7ff" : "#ff7b7b"
+        });
+      }
+      break;
+    }
+  }
+
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const p = particles[i];
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vy += 500 * dt;
+    p.life -= dt;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+
 function drawBackground() {
   const sky = ctx.createLinearGradient(0, 0, 0, height);
-  sky.addColorStop(0, "#060915");
-  sky.addColorStop(0.5, "#0d1a2b");
-  sky.addColorStop(1, "#111d2d");
+  sky.addColorStop(0, "#050b14");
+  sky.addColorStop(0.45, "#0d1b2d");
+  sky.addColorStop(1, "#102039");
   ctx.fillStyle = sky;
   ctx.fillRect(0, 0, width, height);
 
@@ -271,16 +352,16 @@ function drawBackground() {
     ctx.fill();
   }
 
-  const glow = ctx.createRadialGradient(width * 0.75, height * 0.18, 30, width * 0.75, height * 0.18, 380);
-  glow.addColorStop(0, "rgba(92, 221, 255, 0.42)");
-  glow.addColorStop(1, "rgba(92, 221, 255, 0)");
+  const glow = ctx.createRadialGradient(width * 0.75, height * 0.18, 20, width * 0.75, height * 0.18, 420);
+  glow.addColorStop(0, "rgba(116, 218, 255, 0.45)");
+  glow.addColorStop(1, "rgba(116, 218, 255, 0)");
   ctx.fillStyle = glow;
   ctx.fillRect(0, 0, width, height);
 
-  const gridAlpha = 0.08 + Math.sin(elapsed * 2) * 0.02;
-  ctx.strokeStyle = "rgba(133,191,255," + gridAlpha + ")";
+  const lineAlpha = 0.1 + Math.sin(state.elapsed * 2.2) * 0.02;
+  ctx.strokeStyle = "rgba(130, 192, 255, " + lineAlpha + ")";
   ctx.lineWidth = 1;
-  for (let x = 0; x < width; x += 44) {
+  for (let x = 0; x < width; x += 42) {
     ctx.beginPath();
     ctx.moveTo(x, 0);
     ctx.lineTo(x, height);
@@ -291,22 +372,19 @@ function drawBackground() {
 function drawGround() {
   const groundY = height - groundHeight;
   const grad = ctx.createLinearGradient(0, groundY, 0, height);
-  grad.addColorStop(0, "#1d2c3d");
-  grad.addColorStop(1, "#0b1320");
+  grad.addColorStop(0, "#1b2c3a");
+  grad.addColorStop(1, "#0d1721");
   ctx.fillStyle = grad;
   ctx.fillRect(0, groundY, width, groundHeight);
 
-  ctx.fillStyle = "#0f1f2c";
-  ctx.fillRect(0, groundY + 22, width, 3);
+  ctx.fillStyle = "#0f1d2a";
+  ctx.fillRect(0, groundY + 20, width, 2);
 
-  const stripeOffset = (elapsed * speed * 0.18) % 34;
-  ctx.fillStyle = "rgba(126, 240, 255, 0.15)";
-  for (let x = -34; x < width + 34; x += 34) {
-    ctx.fillRect(x - stripeOffset, groundY + 30, 18, 8);
+  const stripeOffset = (state.elapsed * state.speed * 0.18) % 36;
+  ctx.fillStyle = "rgba(138,231,255,0.13)";
+  for (let x = -38; x < width + 38; x += 38) {
+    ctx.fillRect(x - stripeOffset, groundY + 30, 20, 8);
   }
-
-  ctx.fillStyle = "rgba(255,255,255,0.12)";
-  ctx.fillRect(0, groundY + groundHeight - 1, width, 1);
 }
 
 function drawPlayer() {
@@ -316,18 +394,17 @@ function drawPlayer() {
   ctx.save();
   ctx.translate(x + player.w / 2, y + player.h / 2);
 
-  const shape = ctx.createLinearGradient(-player.w / 2, -player.h / 2, player.w / 2, player.h / 2);
-  shape.addColorStop(0, "#b8fbff");
-  shape.addColorStop(1, "#7ef0ff");
-  ctx.fillStyle = shape;
+  const g = ctx.createLinearGradient(-player.w / 2, -player.h / 2, player.w / 2, player.h / 2);
+  g.addColorStop(0, "#dffcff");
+  g.addColorStop(1, "#8ae7ff");
+  ctx.fillStyle = g;
 
-  const pulse = 1 + Math.sin(elapsed * 12) * 0.04;
+  const pulse = 1 + Math.sin(state.elapsed * 15) * 0.055;
   ctx.scale(pulse, pulse);
   ctx.fillRect(-player.w / 2, -player.h / 2, player.w, player.h);
 
-  ctx.fillStyle = "rgba(15, 28, 36, 0.55)";
-  ctx.fillRect(-player.w * 0.18, -player.h * 0.14, player.w * 0.28, player.h * 0.32);
-
+  ctx.fillStyle = "rgba(15, 20, 40, 0.5)";
+  ctx.fillRect(-player.w * 0.15, -player.h * 0.12, player.w * 0.28, player.h * 0.32);
   ctx.restore();
 }
 
@@ -335,20 +412,20 @@ function drawObstacles() {
   for (const ob of obstacles) {
     ctx.save();
     ctx.translate(ob.x, ob.y);
+
     if (ob.type === "block") {
       const grad = ctx.createLinearGradient(0, 0, ob.w, ob.h);
-      grad.addColorStop(0, "#ff8a8a");
-      grad.addColorStop(1, "#ff4d4d");
+      grad.addColorStop(0, "#ff9d7a");
+      grad.addColorStop(1, "#ff5a5a");
       ctx.fillStyle = grad;
       ctx.fillRect(0, 0, ob.w, ob.h);
 
-      ctx.fillStyle = "rgba(255,255,255,0.15)";
+      ctx.fillStyle = "rgba(255,255,255,0.14)";
       ctx.fillRect(4, 4, ob.w - 8, 6);
-
       ctx.fillStyle = "rgba(0,0,0,0.25)";
       ctx.fillRect(0, ob.h - 6, ob.w, 6);
     } else {
-      ctx.fillStyle = "#ff4d4d";
+      ctx.fillStyle = "#ff5a5a";
       ctx.beginPath();
       ctx.moveTo(0, ob.h);
       ctx.lineTo(ob.w / 2, 0);
@@ -359,56 +436,76 @@ function drawObstacles() {
       ctx.fillStyle = "rgba(255,255,255,0.08)";
       ctx.fillRect(0, ob.h - 6, ob.w, 6);
     }
+
     ctx.restore();
   }
 }
 
 function drawParticles() {
   for (const p of particles) {
+    ctx.globalAlpha = Math.max(0, p.life * 1.7);
     ctx.fillStyle = p.color;
-    ctx.globalAlpha = Math.max(0, p.life * 1.5);
     ctx.fillRect(p.x, p.y, p.size, p.size);
     ctx.globalAlpha = 1;
   }
 }
 
 function drawHud() {
-  ctx.fillStyle = "rgba(9, 13, 20, 0.34)";
-  ctx.fillRect(16, 18, 180, 44);
-  ctx.strokeStyle = "rgba(126,240,255,0.5)";
-  ctx.strokeRect(16, 18, 180, 44);
+  ctx.fillStyle = "rgba(8, 12, 18, 0.38)";
+  ctx.fillRect(18, 18, 220, 54);
+  ctx.strokeStyle = "rgba(138,231,255,0.6)";
+  ctx.strokeRect(18, 18, 220, 54);
 
-  ctx.fillStyle = "#dffcff";
+  ctx.fillStyle = "#e8fcff";
   ctx.font = "bold 18px Arial";
-  ctx.fillText("Stevdash", 28, 46);
+  ctx.fillText("Stevdash", 32, 46);
 
   ctx.fillStyle = "#ffd166";
   ctx.font = "bold 16px Arial";
-  ctx.fillText("Score: " + Math.floor(score), 28, 58);
+  ctx.fillText("Score: " + Math.floor(state.score), 32, 62);
 
-  if (state === "gameover") {
-    ctx.fillStyle = "rgba(0,0,0,0.38)";
-    ctx.fillRect(width * 0.2, height * 0.28, width * 0.6, height * 0.24);
+  if (state.mode === "ready") {
+    ctx.fillStyle = "rgba(0,0,0,0.35)";
+    ctx.fillRect(width * 0.2, height * 0.25, width * 0.6, height * 0.28);
 
     ctx.fillStyle = "#ffffff";
     ctx.textAlign = "center";
-    ctx.font = "bold 48px Arial";
-    ctx.fillText("Stevdash", width / 2, height * 0.42);
+    ctx.font = "bold 52px Arial";
+    ctx.fillText("Stevdash", width / 2, height * 0.4);
+
+    ctx.fillStyle = "#dffcff";
+    ctx.font = "bold 22px Arial";
+    ctx.fillText("Click or press space to start", width / 2, height * 0.48);
+
+    ctx.fillStyle = "#ffd166";
+    ctx.font = "bold 18px Arial";
+    ctx.fillText("Geometry Dash style physics", width / 2, height * 0.54);
+    ctx.textAlign = "left";
+  }
+
+  if (state.mode === "gameover") {
+    ctx.fillStyle = "rgba(0,0,0,0.38)";
+    ctx.fillRect(width * 0.2, height * 0.26, width * 0.6, height * 0.3);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.textAlign = "center";
+    ctx.font = "bold 56px Arial";
+    ctx.fillText("Stevdash", width / 2, height * 0.4);
 
     ctx.fillStyle = "#ffd166";
     ctx.font = "bold 26px Arial";
-    ctx.fillText("Score: " + Math.floor(score), width / 2, height * 0.52);
+    ctx.fillText("Score: " + Math.floor(state.score), width / 2, height * 0.49);
 
-    ctx.font = "bold 18px Arial";
     ctx.fillStyle = "#dffcff";
+    ctx.font = "bold 18px Arial";
     ctx.fillText("Click or press space to restart", width / 2, height * 0.58);
     ctx.textAlign = "left";
   }
 }
 
 function drawFlash() {
-  if (flash > 0) {
-    ctx.fillStyle = "rgba(255,255,255," + flash * 0.42 + ")";
+  if (state.flash > 0) {
+    ctx.fillStyle = "rgba(255,255,255," + state.flash * 0.44 + ")";
     ctx.fillRect(0, 0, width, height);
   }
 }
@@ -425,15 +522,15 @@ function render() {
 
 let previous = 0;
 function loop(ts) {
-  const dt = Math.min(0.03, (ts - previous) / 1000 || 0.016);
+  const dt = Math.min(0.033, (ts - previous) / 1000 || 0.016);
   previous = ts;
   update(dt);
   render();
   requestAnimationFrame(loop);
 }
-requestAnimationFrame(loop);
 
-resetGame();
+reset();
+requestAnimationFrame(loop);
 </script>
 </body>
 </html>
